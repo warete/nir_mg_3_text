@@ -27,6 +27,16 @@
 %для борьбы с переполнениями за счет разреженных слов в абзаце
 \emergencystretch=5em
 
+%Кастомная команда для вставки картинок
+\usepackage{float}
+\newcommand{\imgh}[3]{
+  \begin{figure}[H]
+    \begin{center}
+    \includegraphics[width=#1\hsize]{#2}\\[2mm]
+    \caption{#3}\label{fig:#2}
+    \end{center}
+  \end{figure}
+}
 
 \graphicspath{{fig/}}
 \addbibresource{bib.bib}
