@@ -1,68 +1,586 @@
 \chapter{Листинг разработанной программы}
 
-\begin{lstlisting}[caption={Пример листинга в приложении}, label={ls:a:01}]
-/**
- * Program main
- */
-int main(int argc, char **argv) {
-  printf("[Matrix Multiply Using CUDA] - Starting...\n");
+\lstset{extendedchars=\true}
+\lstset{keepspaces=\true}
+\begin{lstlisting}[caption={Код backend-части приложения}, label={ls:a:01}]
+from flask import Flask, jsonify, render_template, request,
+send_file
+from flask_cors import CORS
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from .utils import check_model, calculate_sensitivity, calcu
+late_specificity, get_data_from_csv
+import os
+import json
+import glob
 
-  if (checkCmdLineFlag(argc, (const char **)argv, "help") ||
-      checkCmdLineFlag(argc, (const char **)argv, "?")) {
-    printf("Usage -device=n (n >= 0 for deviceID)\n");
-    printf("-wA=WidthA -hA=HeightA (Width x Height of Matrix A)\n");
-    printf("-wB=WidthB -hB=HeightB (Width x Height of Matrix B)\n");
-    printf("Note: Outer matrix dimensions of A & B matrices" \
-           "must be equal.\n");
+import pandas as pd
+import time
+import urllib.parse
 
-    exit(EXIT_SUCCESS);
-  }
+class Application:
+    model = None
+    model_constructor = None
+    upload_path = '/upload'
+    server_port = 5000
+    csv_delimiter = ','
+    model_params = [
+        {
+            'code': 'testPercent',
+            'name': 'Процент тестовой выборки',
+            'defaultValue': 25,
+        }
+    ]
+    metrics = []
 
-  // This will pick the best possible CUDA capable device, otherwise
-  // override the device ID based on input provided 
-  // at the command line
-  int dev = findCudaDevice(argc, (const char **)argv);
+    def __init__(self, model, upload_path, csv_delimiter, mo
+del_params=None, server_port=5000, metrics=None):
+        if model_params is None:
+            model_params = []
+        if callable(model):
+            self.model_constructor = model
+        else:
+            self.model = model
+        self.upload_path = upload_path
+        self.csv_delimiter = csv_delimiter
+        self.server_port = server_port
+        self.model_params += model_params
+        self.process_model_params()
+        if metrics:
+            self.metrics = metrics
 
-  int block_size = 32;
+    def set_model(self, model):
+        self.model = model
+        return self
 
-  dim3 dimsA(5 * 2 * block_size, 5 * 2 * block_size, 1);
-  dim3 dimsB(5 * 4 * block_size, 5 * 2 * block_size, 1);
+    def set_upload_path(self, upload_path):
+        self.upload_path = upload_path
+        return self
 
-  // width of Matrix A
-  if (checkCmdLineFlag(argc, (const char **)argv, "wA")) {
-    dimsA.x = getCmdLineArgumentInt(argc, (const char **)argv, "wA");
-  }
+    def set_server_port(self, port):
+        self.server_port = port
+        return self
 
-  // height of Matrix A
-  if (checkCmdLineFlag(argc, (const char **)argv, "hA")) {
-    dimsA.y = getCmdLineArgumentInt(argc, (const char **)argv, "hA");
-  }
+    def set_csv_delimiter(self, csv_delimiter):
+        self.csv_delimiter = csv_delimiter
+        return self
 
-  // width of Matrix B
-  if (checkCmdLineFlag(argc, (const char **)argv, "wB")) {
-    dimsB.x = getCmdLineArgumentInt(argc, (const char **)argv, "wB");
-  }
+    def run(self):
+        flask_app = Flask(
+            __name__,
+            static_url_path='',
+            static_folder='./frontend/dist',
+            template_folder='./frontend/dist'
+        )
+        flask_app.debug = True
+        flask_app.config['UPLOAD_FOLDER'] = os.path.abspath(
+self.upload_path)
+        CORS(flask_app)
 
-  // height of Matrix B
-  if (checkCmdLineFlag(argc, (const char **)argv, "hB")) {
-    dimsB.y = getCmdLineArgumentInt(argc, (const char **)argv, "hB");
-  }
+        self.set_routes(flask_app)
 
-  if (dimsA.x != dimsB.y) {
-    printf("Error: outer matrix dimensions must be equal. 
-            (%d != %d)\n", dimsA.x, dimsB.y);
-    exit(EXIT_FAILURE);
-  }
+        flask_app.run(port=self.server_port)
 
-  printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y,
-         dimsB.x, dimsB.y);
+    def process_model_params(self):
+        for k in range(len(self.model_params)):
+            if 'value' not in self.model_params[k]:
+                self.model_params[k]['value'] = self.model_p
+arams[k]['defaultValue']
 
-  int matrix_result = MatrixMultiply(argc, 
-                                     argv, 
-                                     block_size, 
-                                     dimsA, 
-                                     dimsB);
+    def set_routes(self, app):
+        @app.route('/')
+        def index():
+            return render_template('index.html')
 
-  exit(matrix_result);
-}
+        @app.route('/' + self.upload_path + '/<path:path>')
+        def send_upload(path):
+            return send_file(os.path.join(app.config['UPLOAD
+_FOLDER'], path))
+
+        @app.route('/model_params')
+        def model_params():
+            return jsonify({
+                'status': 'success',
+                'result': {
+                    'params': self.model_params
+                }
+            })
+
+        @app.route('/get_files/', methods=['GET'])
+        def get_files():
+            return jsonify({
+                'status': 'success',
+                'result': [os.path.basename(file) for file i
+n
+                            glob.glob(os.path.join(app.config
+['UPLOAD_FOLDER'], '*.csv'))]
+            })
+
+        @app.route('/upload_data/', methods=['POST'])
+        def upload_data():
+            file = request.files['file']
+            if file:
+                file_path = os.path.join(
+                    app.config['UPLOAD_FOLDER'], file.filena
+me)
+                file.save(file_path)
+                return jsonify({
+                    'status': 'success',
+                    'result': {
+                        'file_path': file.filename
+                    }
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'result': {
+                        'message': 'Неподходящий тип файла'
+                    }
+                })
+
+        @app.route('/fit_predict/', methods=['POST'])
+        def fit_predict_handler():
+            # {'file': {'file_path': 'test.csv'}, 'modelPara
+ms': {}}
+            req_params = json.loads(request.get_data())
+            if len(req_params['file']['file_path']) == 0 or
+not os.path.isfile(
+                    os.path.join(self.upload_path, req_param
+s['file']['file_path'])):
+                return jsonify({
+                    'status': 'error',
+                    'result': {
+                        'message': 'Файл не существует'
+                    }
+                })
+            if self.model_constructor:
+                params = {}
+                for paramCode in req_params['modelParams']:
+                    if paramCode == 'testPercent':
+                        continue
+                    params[paramCode] = req_params['modelPar
+ams'][paramCode]['value']
+                self.model = self.model_constructor(**params
+)
+            if not check_model(self.model):
+                return jsonify({
+                    'status': 'error',
+                    'result': {
+                        'message': 'Ошибка при использовании
+  модели. Проверьте наличие необходимых методов'
+                    }
+                })
+            data_from_file = get_data_from_csv(
+                os.path.join(self.upload_path, req_params['f
+ile']['file_path']), self.csv_delimiter)
+            x = data_from_file.iloc[:, :-1]
+            y = data_from_file.iloc[:, -1:]
+
+            on_before_split_method = getattr(
+                self.model, 'on_before_split', None)
+            if callable(on_before_split_method):
+                x, y = self.model.on_before_split(data_from_
+file)
+
+            x_train, x_test, y_train, y_test = train_test_sp
+lit(x, y,
+
+    test_size=int(req_params['modelParams']['testPercent'][
+
+        'value']) / 100
+
+    )
+
+            on_after_split_method = getattr(self.model, 'on_
+after_split', None)
+            if callable(on_after_split_method):
+                x_train, x_test, y_train, y_test = self.mode
+l.on_after_split(
+                    x_train, x_test, y_train, y_test)
+
+            self.model.fit(x_train, y_train)
+            print(x_test.shape)
+            y_pred = self.model.predict(x_test)
+
+            metrics_result = {}
+            for metric in self.metrics:
+                f_metric_func = metric['func']
+                metric_result = None
+                if callable(f_metric_func):
+                    metric_result = f_metric_func(
+                        y_test, y_pred, y_train, x_train, x_
+test)
+                else:
+                    metric_method = getattr(self.model, f_me
+tric_func, None)
+                    if metric_method:
+                        metric_result = metric_method(
+                            y_test, y_pred, y_train, x_train
+, x_test)
+
+                if metric_result:
+                    metrics_result[metric['code']] = {
+                        'code': metric['code'],
+                        'name': metric['name'],
+                        'result': metric_result,
+                        'result_type': metric['result_type']
+                    }
+
+            # accuracy = accuracy_score(y_test, y_pred)
+            # sensitivity = calculate_sensitivity(y_test, y_
+pred) * 100
+            # specificity = calculate_specificity(y_test, y_
+pred) * 100
+
+            return jsonify({
+                'status': 'success',
+                'result': metrics_result
+            })
+
+        @app.route('/predict/', methods=['POST'])
+        def predict_handler():
+            req_params = json.loads(request.get_data())
+            if len(req_params['file']['file_path']) == 0 or
+not os.path.isfile(
+                    os.path.join(self.upload_path, req_param
+s['file']['file_path'])):
+                return jsonify({
+                    'status': 'error',
+                    'result': {
+                        'message': 'Файл не существует'
+                    }
+                })
+            if not check_model(self.model):
+                return jsonify({
+                    'status': 'error',
+                    'result': {
+                        'message': 'Ошибка при использовании
+  модели. Проверьте наличие необходимых методов'
+                    }
+                })
+            data_from_file = get_data_from_csv(
+                os.path.join(self.upload_path, req_params['f
+ile']['file_path']), self.csv_delimiter)
+            x = data_from_file.iloc[:, :-1]
+            y = data_from_file.iloc[:, -1:]
+
+            on_before_split_method = getattr(
+                self.model, 'on_before_split_for_predict', N
+one)
+            if callable(on_before_split_method):
+                x_test = on_before_split_method(data_from_fi
+le)
+
+            print(x_test.shape)
+            y_pred = self.model.predict(x_test)
+            print(y_pred.shape)
+            on_after_real_predict_method = getattr(
+                self.model, 'on_after_real_predict', None)
+            if callable(on_after_real_predict_method):
+                y_pred = on_after_real_predict_method(y_pred
+)
+
+            new_data_frame = pd.DataFrame(y_pred)
+            predict_data_file_name, _ = os.path.splitext(
+                req_params['file']['file_path'])
+            result_file_path = os.path.join(
+                self.upload_path, predict_data_file_name + '
+_result_' + time.strftime("%Y_%m_%d_%H_%M_%S") + '.csv')
+            new_data_frame.to_csv(result_file_path, sep=',',
+                                  encoding='utf-8', index=Fa
+lse)
+
+            return jsonify({
+                'status': 'success',
+                'result': {
+                    'filePath': self.upload_path + '/' + pre
+dict_data_file_name + '_result_' + time.strftime("%Y_%m_%d_%
+H_%M_%S") + '.csv'
+                }
+            })
+\end{lstlisting}
+
+
+
+\begin{lstlisting}[caption={Код программы для тестирования приложения с подключенной моделью регрессии экспериментальных данных}, label={ls:a:02}]
+  from ml_simple_gui import Application
+  import os
+  from sklearn.svm import SVC
+  from sklearn.metrics import accuracy_score
+  
+  import numpy as np
+  import pandas as pd
+  import tensorflow as tf
+  from sklearn.preprocessing import StandardScaler
+  from sklearn.model_selection import train_test_split
+  import time
+  
+  
+  class CustomModel:
+      model = None
+      train_dataset = None
+      test_dataset = None
+      epochs = 1000
+      main_scaler = None
+      columns = []
+      last_fit_history = {}
+  
+      def __init__(self, optimizer_learning_speed=0.01, epochs
+  =1000):
+          inputs = tf.keras.layers.Input(
+              name='values18', shape=(19,), dtype='float32')
+          outputs = tf.keras.layers.Dropout(0.1)(inputs)
+  
+          outputs = tf.keras.layers.Dense(37, activation='sigm
+  oid')(outputs)
+          outputs = tf.keras.layers.Dropout(0.1)(outputs)
+  
+          outputs = tf.keras.layers.Dense(18)(outputs)
+          model = tf.keras.Model(inputs=inputs, outputs=output
+  s)
+          model.compile(optimizer=tf.keras.optimizers.SGD(
+              float(optimizer_learning_speed)), loss='MSE')
+  
+          self.epochs = int(epochs)
+          self.model = model
+  
+      def fit(self, x_train, y_train):
+          start_t = time.time()
+          history = self.model.fit(self.train_dataset, validat
+  ion_data=self.test_dataset, epochs=self.epochs,
+                                   callbacks=[tf.keras.callbac
+  ks.TensorBoard(log_dir='logs')])
+  
+          self.last_fit_history['loss'] = history.history['los
+  s']
+          self.last_fit_history['val_loss'] = history.history[
+  'val_loss']
+  
+          end_t = time.time()
+          print('Finish time: ', end_t - start_t)
+  
+      def predict(self, x_test):
+          pred_test_X = self.model.predict(x_test)
+          return pred_test_X
+  
+      def on_before_split(self, data_from_file):
+          df = data_from_file
+          cols = df.columns.tolist()
+          diameter_data = df['diameter'].values
+          df = df[cols[:-1]]
+          self.columns = df.columns
+  
+          source_values = df.values
+  
+          # data preprocessing
+          scaler = StandardScaler()
+          scaler.fit(source_values)
+  
+          source_values = scaler.transform(source_values)
+  
+          d_scaler = StandardScaler()
+          d_scaled = d_scaler.fit_transform([[x] for x in diam
+  eter_data])
+          diameter_data = [x[0] for x in d_scaled]
+  
+          a = []
+          for i in range(len(source_values)):
+              a.append(np.insert(source_values[i], 0, diameter
+  _data[i]))
+          source_values = np.array(a)
+  
+          np.random.shuffle(source_values)
+  
+          self.main_scaler = scaler
+  
+          return source_values[:, :19], source_values[:, 19:]
+  
+      def on_before_split_for_predict(self, data_from_file):
+          df = data_from_file
+          cols = df.columns.tolist()
+          diameter_data = df['diameter'].values
+          df = df[cols[:-1]]
+  
+          source_values = df.values
+  
+          # data preprocessing
+          scaler = StandardScaler()
+          scaler.fit(source_values)
+  
+          source_values = scaler.transform(source_values)
+  
+          d_scaler = StandardScaler()
+          d_scaled = d_scaler.fit_transform([[x] for x in diam
+  eter_data])
+          diameter_data = [x[0] for x in d_scaled]
+  
+          a = []
+          for i in range(len(source_values)):
+              a.append(np.insert(source_values[i], 0, diameter
+  _data[i]))
+          source_values = np.array(a)
+  
+          np.random.shuffle(source_values)
+  
+          self.main_scaler = scaler
+  
+          return source_values
+  
+      def on_after_split(self, x_train, x_test, y_train, y_tes
+  t):
+          self.train_dataset = tf.data.Dataset.from_tensor_sli
+  ces(
+              (x_train, y_train)).batch(1000)
+          self.test_dataset = tf.data.Dataset.from_tensor_slic
+  es(
+              (x_test, y_test)).batch(1000)
+          return x_train, x_test, y_train, y_test
+  
+      def on_after_real_predict(self, y_pred):
+          return self.main_scaler.inverse_transform(y_pred).to
+  list()
+  
+      def prepare_data_for_error_metrics(self, y_test, y_pred,
+   x_test):
+          test_x_without_d = x_test[:, 1:]
+          real_data = pd.DataFrame(self.main_scaler.inverse_tr
+  ansform(np.hstack((test_x_without_d, y_test))),
+                                   columns=self.columns)
+          predict_data = pd.DataFrame(self.main_scaler.inverse
+  _transform(np.hstack((test_x_without_d, y_pred))),
+                                      columns=self.columns)
+          left_columns = ['t' + str(i) for i in range(18, 36)]
+          left_real = real_data[left_columns]
+          left_predict = predict_data[left_columns]
+          left_real.columns = [
+              'mw' + str(i) for i in range(9)] + ['ir' + str(i
+  ) for i in range(9)]
+          left_predict.columns = [
+              'mw' + str(i) for i in range(9)] + ['ir' + str(i
+  ) for i in range(9)]
+  
+          return left_predict, left_real
+  
+      def calc_rel_error(self, y_test, y_pred, y_train, x_trai
+  n, x_test):
+          '''
+          Метод для расчета относительной ошибки
+          '''
+          left_predict, left_real = self.prepare_data_for_erro
+  r_metrics(
+              y_test, y_pred, x_test)
+          rel_error = left_real.sub(left_predict).div(
+              left_real).abs().sum().mul(100).div(len(left_rea
+  l)).to_frame()
+  
+          result = {}
+          for item_k in rel_error.to_dict()[0].keys():
+              result[item_k] = float('{:.3f}'.format(
+                  rel_error.to_dict()[0][item_k]))
+          return result
+  
+      def calc_mae_error(self, y_test, y_pred, y_train, x_trai
+  n, x_test):
+          '''
+          Метод для расчета средней абсолютной ошибки
+          '''
+          left_predict, left_real = self.prepare_data_for_erro
+  r_metrics(
+              y_test, y_pred, x_test)
+          mae_error = left_real.sub(left_predict).abs(
+          ).sum().div(len(left_real)).to_frame()
+  
+          result = {}
+          for item_k in mae_error.to_dict()[0].keys():
+              result[item_k] = float('{:.3f}'.format(
+                  mae_error.to_dict()[0][item_k]))
+          return result
+  
+      def get_fit_mse(self, y_test, y_pred, y_train, x_train,
+  x_test):
+          return float('{:.3f}'.format(self.last_fit_history['
+  val_loss'][-1]))
+  
+      def get_loss_graph(self, y_test, y_pred, y_train, x_trai
+  n, x_tests):
+          import matplotlib.pyplot as plt
+          import io
+          import base64
+  
+          plt.xlabel('epochs')
+          plt.ylabel('loss')
+          plt.plot(list(range(self.epochs)),
+                   self.last_fit_history['loss'], label='loss'
+  )
+          plt.plot(list(range(self.epochs)),
+                   self.last_fit_history['val_loss'], label='v
+  al_loss')
+          plt.legend()
+          plt.grid(True)
+  
+          s = io.BytesIO()
+          plt.savefig(s, format='png', bbox_inches="tight")
+          plt.close()
+          s = base64.b64encode(s.getvalue()).decode("utf-8").r
+  eplace("\n", "")
+          return 'data:image/png;base64, ' + s
+  
+  
+  def model(**args):
+      return CustomModel(**args)
+  
+  
+  def accuracy_score_custom(y_test, y_pred, y_train, x_train,
+  x_test):
+      return accuracy_score(y_test, y_pred)
+  
+  
+  app = Application(
+      model=model,
+      upload_path=os.path.join('upload'),
+      csv_delimiter=',',
+      model_params=[
+          {
+              'code': 'optimizer_learning_speed',
+              'name': 'Скорость обучения',
+              'defaultValue': '0.01',
+          },
+          {
+              'code': 'epochs',
+              'name': 'Количество эпох',
+              'defaultValue': '50',
+          }
+      ],
+      server_port=5000,
+      metrics=[
+          {
+              'code': 'rel_error',
+              'name': 'Относительная ошибка',
+              'func': 'calc_rel_error',
+              'result_type': 'table'
+          },
+          {
+              'code': 'mae_error',
+              'name': 'Средняя абсолютная ошибка',
+              'func': 'calc_mae_error',
+              'result_type': 'table'
+          },
+          {
+              'code': 'mse',
+              'name': 'Среднеквадратичная ошибка',
+              'func': 'get_fit_mse',
+              'result_type': 'scalar'
+          },
+          {
+              'code': 'loss',
+              'name': 'График изменения среднеквадратичной оши
+  бки во время обучения',
+              'func': 'get_loss_graph',
+              'result_type': 'image'
+          }
+  
+      ]
+  )
+  
+  app.run()
 \end{lstlisting}
