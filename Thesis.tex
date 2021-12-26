@@ -19,7 +19,7 @@
 \usepackage{color}
 \usepackage[colorlinks=false,linkcolor=blue,breaklinks]{hyperref}
 
-\usepackage[citestyle=gost-numeric,style=gost-numeric,maxnames=100,natbib=true,urldate=long, sorting=none]{biblatex}
+\usepackage[citestyle=gost-numeric,style=gost-numeric,maxnames=100,natbib=true,urldate=long, sorting=nty, backend=biber]{biblatex}
 %\bibliographystyle{ugost2008ns.bst} 
 \pagestyle{footcenter}
 \chapterpagestyle{footcenter}
@@ -53,6 +53,13 @@
 \input{Chapter2.tex}
 \input{Chapter3.tex}
 \input{Conclusions.tex}
+
+% \newpage
+
+% \cite{Jackson2021TheOO}
+% \cite{CitekeyBook}
+% \cite{CitekeyInproceedings}
+% \cite{CitekeyArticle}
 
 \nocite{*}
 
